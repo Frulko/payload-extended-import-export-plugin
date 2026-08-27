@@ -12,6 +12,7 @@ An extended import and export plugin for [Payload CMS](https://payloadcms.com) w
 - 🌐 **Localization Support** - Work with multilingual data
 - 🔍 **Data Validation** - Validate data before import
 - 📁 **Sample Files** - Generate sample files for import
+- 🗒️ **Notion Import** - Import a Notion export (ZIP) with its page content and images
 
 ## Installation
 
@@ -74,10 +75,36 @@ payloadExtendedImportExportPlugin({
 
 ## Supported File Formats
 
-- **CSV** - Comma-separated values
+- **CSV** - Comma-separated values (RFC 4180: quotes, commas and line breaks inside values)
 - **JSON** - JavaScript Object Notation
 - **Excel** - .xlsx files
-- **TSV** - Tab-separated values
+- **ZIP** - Notion export (Markdown & CSV), images included
+
+## Notion Import
+
+Drop a Notion export archive straight into the drawer — no unzipping, no manual image upload.
+
+1. In Notion: **••• → Export → Markdown & CSV**, include subpages, download the `.zip`
+2. Drop the `.zip` into the import drawer
+3. Map the columns and import
+
+What the plugin does with the archive:
+
+- Reads the database CSV (the first one found) as the rows to import
+- Adds a **`content`** column holding the page body (Markdown, without the title and the
+  property block). Map it to a `richText` or `textarea` field
+- Uploads the files referenced by *Files & media* columns **and** the images embedded in page
+  bodies into your upload collection (`media`, or the first upload-enabled collection), then
+  links them: upload fields get the document ID, `richText` fields get a real Lexical upload node
+- Only the files actually referenced by the imported rows are sent to the server
+
+Known limits:
+
+- The archive is parsed in the browser and its files travel to the server inside a single JSON
+  request — good for regular exports, not for multi-gigabyte ones
+- Identical files are deduplicated within one import; re-importing the same archive creates new
+  `media` documents
+- ZIP64 archives (>4 GB or >65535 files) are not supported
 
 ## User Interface
 
@@ -233,9 +260,14 @@ The plugin exposes an import endpoint at `/api/import` that accepts:
 - Check that the plugin is properly configured in `payload.config.ts`
 
 **File upload errors:**
-- Verify file format is supported (CSV, JSON, Excel, TSV)
+- Verify file format is supported (CSV, JSON, Excel, ZIP)
 - Check file size limits in your Payload configuration
 - Ensure proper field mapping between file columns and collection fields
+
+**Notion images are missing:**
+- Export from Notion as **Markdown & CSV** (the HTML export is not supported)
+- Import the `.zip` as downloaded — images are resolved by their path inside the archive
+- Make sure the target field is an `upload` field, or a `richText` field for page bodies
 
 **Import validation errors:**
 - Review required fields in your collection schema

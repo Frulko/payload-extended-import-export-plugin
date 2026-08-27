@@ -1,26 +1,78 @@
-import * as XLSX from 'xlsx'
-
 export type TableData = {
+  /** Вложения из архива: путь внутри архива → data-URI (см. parseNotionZip) */
+  assets?: Record<string, string>
   headers: string[]
   rows: (number | string)[][]
 }
 
+/**
+ * Разбор CSV по RFC 4180: кавычки, запятые и переносы строк внутри значений
+ */
+const parseDelimited = (text: string, delimiter = ','): string[][] => {
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ''
+  let quoted = false
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]
+
+    if (quoted) {
+      if (char !== '"') {
+        cell += char
+      } else if (text[i + 1] === '"') {
+        cell += '"'
+        i++
+      } else {
+        quoted = false
+      }
+      continue
+    }
+
+    if (char === '"' && cell === '') {
+      quoted = true
+    } else if (char === delimiter) {
+      row.push(cell)
+      cell = ''
+    } else if (char === '\n') {
+      row.push(cell)
+      rows.push(row)
+      row = []
+      cell = ''
+    } else if (char !== '\r') {
+      cell += char
+    }
+  }
+
+  if (cell !== '' || row.length > 0) {
+    row.push(cell)
+    rows.push(row)
+  }
+
+  return rows
+}
+
 export const parseCSV = (text: string): TableData => {
-  const lines = text.split('\n').filter((line) => line.trim())
-  if (lines.length === 0) throw new Error('Файл пуст')
+  // BOM есть в экспортах Notion и Excel, иначе ломается первый заголовок
+  const lines = parseDelimited(text.replace(/^\uFEFF/, '')).filter((row) =>
+    row.some((cell) => cell.trim() !== ''),
+  )
+  if (lines.length === 0) {
+    throw new Error('Файл пуст')
+  }
 
-  const headers = lines[0]
-    .split(',')
-    .map((h) => h.trim().replace(/"/g, ''))
-    .filter((h) => h && h.trim() !== '') // Фильтруем пустые заголовки
+  // Пустые заголовки отбрасываем вместе с их колонками
+  const columns = lines[0].map((header, index) => ({ header: header.trim(), index }))
+  const kept = columns.filter(({ header }) => header !== '')
 
-  if (headers.length === 0) throw new Error('Не найдены заголовки колонок')
+  if (kept.length === 0) {
+    throw new Error('Не найдены заголовки колонок')
+  }
 
-  const rows = lines
-    .slice(1)
-    .map((line) => line.split(',').map((cell) => cell.trim().replace(/"/g, '')))
-
-  return { headers, rows }
+  return {
+    headers: kept.map(({ header }) => header),
+    rows: lines.slice(1).map((row) => kept.map(({ index }) => (row[index] ?? '').trim())),
+  }
 }
 
 export const parseJSON = (text: string): TableData => {
@@ -60,6 +112,9 @@ export const parseJSON = (text: string): TableData => {
 }
 
 export const parseXLSX = async (file: File): Promise<TableData> => {
+  // xlsx весит больше остального плагина — грузим только когда реально нужен
+  const XLSX = await import('xlsx')
+
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = (e) => {
@@ -117,8 +172,12 @@ export const readFile = async (file: File): Promise<TableData> => {
     file.name.toLowerCase().endsWith('.xls')
   ) {
     parsedData = await parseXLSX(file)
+  } else if (file.name.toLowerCase().endsWith('.zip')) {
+    // Грузим разбор архива по требованию — он нужен только для экспортов Notion
+    const { parseNotionZip } = await import('./notion.js')
+    parsedData = await parseNotionZip(file)
   } else {
-    throw new Error('Поддерживаются файлы: CSV, JSON, XLSX, XLS')
+    throw new Error('Поддерживаются файлы: CSV, JSON, XLSX, XLS, ZIP (экспорт Notion)')
   }
 
   // Валидация данных перед установкой состояния

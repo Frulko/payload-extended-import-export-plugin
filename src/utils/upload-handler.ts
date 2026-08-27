@@ -6,14 +6,23 @@ export interface UploadFieldData {
   filename?: string
 }
 
+export interface ImportAssets {
+  /** Путь файла внутри архива → data-URI */
+  files: Record<string, string>
+  /** Кэш одного импорта: путь → загрузка файла, чтобы не грузить его дважды */
+  uploaded: Map<string, Promise<null | string>>
+}
+
 /**
- * Обрабатывает загрузку изображений для upload полей
+ * Обрабатывает загрузку изображений для upload полей.
+ * Значение — URL или путь файла внутри импортируемого архива (см. assets).
  */
 export const handleUploadField = async (
   payload: Payload,
   value: string | string[] | null | undefined,
   relationTo: string,
   hasMany: boolean = false,
+  assets?: ImportAssets,
 ): Promise<null | string | string[]> => {
   if (!value) {
     return null
@@ -49,7 +58,9 @@ export const handleUploadField = async (
         }
       }
 
-      const uploadPromises = urls.map((url) => processUploadUrl(payload, url, relationTo))
+      const uploadPromises = urls.map((url) =>
+        processUploadUrl(payload, url, relationTo, 3, assets),
+      )
       // Обрабатываем изображения пачками, чтобы избежать конкурентных записей в MongoDB
       const results = await processInBatches(uploadPromises, 3) // Максимум 3 одновременно
       return results.filter(Boolean) as string[] // Убираем null значения
@@ -80,7 +91,7 @@ export const handleUploadField = async (
         return null
       }
 
-      return await processUploadUrl(payload, url, relationTo)
+      return await processUploadUrl(payload, url, relationTo, 3, assets)
     }
   } catch (error) {
     // Логирование ошибки для отладки
@@ -120,9 +131,16 @@ const processUploadUrl = async (
   url: string,
   relationTo: string,
   retries: number = 3,
+  assets?: ImportAssets,
 ): Promise<null | string> => {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
+      // Файл из архива (экспорт Notion) — берём его содержимое напрямую, без сети
+      const asset = assets ? findAsset(assets, url) : undefined
+      if (assets && asset) {
+        return await uploadAsset(payload, asset, relationTo, assets)
+      }
+
       if (!isValidUrl(url)) {
         if (process.env.NODE_ENV === 'development') {
           // eslint-disable-next-line no-console
@@ -245,6 +263,65 @@ const processUploadUrl = async (
   }
 
   return null
+}
+
+/**
+ * Ищет файл архива по значению ячейки (путь внутри архива, возможно URL-encoded)
+ */
+const findAsset = (assets: ImportAssets, value: string): string | undefined => {
+  const path = value.trim()
+  if (assets.files[path]) {
+    return path
+  }
+  try {
+    const decoded = decodeURIComponent(path)
+    return assets.files[decoded] ? decoded : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Создаёт запись в коллекции media из файла архива
+ */
+const uploadAsset = (
+  payload: Payload,
+  path: string,
+  relationTo: string,
+  assets: ImportAssets,
+): Promise<null | string> => {
+  // Кэшируем промис, а не результат: строки импортируются параллельно и одну
+  // и ту же картинку иначе загрузят несколько раз.
+  // ponytail: дедупликация живёт только внутри одного импорта, повторный импорт
+  // того же архива создаст новые записи в media.
+  const key = `${relationTo}:${path}`
+  const pending =
+    assets.uploaded.get(key) || createMediaFromAsset(payload, path, relationTo, assets)
+  assets.uploaded.set(key, pending)
+  return pending
+}
+
+const createMediaFromAsset = async (
+  payload: Payload,
+  path: string,
+  relationTo: string,
+  assets: ImportAssets,
+): Promise<null | string> => {
+  const parsed = /^data:([^;]+);base64,(.*)$/s.exec(assets.files[path])
+  if (!parsed) {
+    return null
+  }
+
+  const data = Buffer.from(parsed[2], 'base64')
+  const name = path.split('/').pop() || 'file'
+
+  const mediaDoc = await payload.create({
+    collection: relationTo,
+    data: { alt: name },
+    file: { data, mimetype: parsed[1], name, size: data.length },
+  })
+
+  return String(mediaDoc.id)
 }
 
 /**

@@ -76,12 +76,16 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileChange, inputRef }) => {
 							<FileText size={16} />
 							<span>XLSX</span>
 						</div>
+						<div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+							<Database size={16} />
+							<span>ZIP (Notion)</span>
+						</div>
 					</div>
 
 					<input
 						ref={inputRef}
 						type="file"
-						accept=".csv,.json,.xlsx,.xls"
+						accept=".csv,.json,.xlsx,.xls,.zip"
 						style={{
 							position: "absolute",
 							opacity: 0,
@@ -112,6 +116,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileChange, inputRef }) => {
 					<li><strong>CSV</strong> - текстовые файлы с разделителями</li>
 					<li><strong>JSON</strong> - структурированные данные в формате JSON</li>
 					<li><strong>XLSX</strong> - файлы Microsoft Excel</li>
+					<li><strong>ZIP</strong> - экспорт Notion (Markdown &amp; CSV) вместе с картинками</li>
 				</ul>
 			</div>
 		</div>

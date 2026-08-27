@@ -62,7 +62,7 @@ const ImportButton: React.FC<ImportButtonProps> = ({
         return obj
       })
 
-      await startImport(settings, dataAsObjects, collection)
+      await startImport(settings, dataAsObjects, collection, tableData.assets)
     }
   }
 

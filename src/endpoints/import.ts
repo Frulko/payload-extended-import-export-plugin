@@ -1,75 +1,13 @@
 import type { Endpoint, PayloadRequest, RelationshipField } from 'payload'
 
+import type { ImportAssets } from '../utils/upload-handler.js'
+
+import { convertStringToLexicalFormat } from '../utils/lexical.js'
 import { handleUploadField } from '../utils/upload-handler.js'
 
-// Функция для конвертации строки в формат Lexical richText
-function convertStringToLexicalFormat(text: string) {
-  if (!text || typeof text !== 'string') {
-    return null
-  }
-
-  // Разбиваем текст на параграфы по переносам строк
-  const paragraphs = text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-
-  // Если нет параграфов, возвращаем пустую структуру
-  if (paragraphs.length === 0) {
-    return {
-      root: {
-        type: 'root',
-        children: [
-          {
-            type: 'paragraph',
-            children: [],
-            direction: null,
-            format: '',
-            indent: 0,
-            version: 1,
-          },
-        ],
-        direction: null,
-        format: '',
-        indent: 0,
-        version: 1,
-      },
-    }
-  }
-
-  // Создаем структуру Lexical для каждого параграфа
-  const children = paragraphs.map((paragraph) => ({
-    type: 'paragraph',
-    children: [
-      {
-        type: 'text',
-        detail: 0,
-        format: 0,
-        mode: 'normal',
-        style: '',
-        text: paragraph,
-        version: 1,
-      },
-    ],
-    direction: null,
-    format: '',
-    indent: 0,
-    version: 1,
-  }))
-
-  return {
-    root: {
-      type: 'root',
-      children,
-      direction: null,
-      format: '',
-      indent: 0,
-      version: 1,
-    },
-  }
-}
-
 export interface ImportRequest {
+  /** Файлы из архива: путь внутри архива → data-URI (экспорт Notion) */
+  assets?: Record<string, string>
   collection: string
   data: Record<string, any>[]
   settings: {
@@ -113,8 +51,12 @@ export const importEndpoint: Endpoint = {
         throw new Error('Не удается получить данные из запроса')
       }
 
-      const { collection, data, settings } = requestData
+      const { assets: assetFiles, collection, data, settings } = requestData
       const { compareField, fieldMappings, locale, mode } = settings
+
+      const assets: ImportAssets | undefined = assetFiles
+        ? { files: assetFiles, uploaded: new Map() }
+        : undefined
 
       // Валидация входных данных
       if (!collection || !data || !Array.isArray(data)) {
@@ -179,7 +121,7 @@ export const importEndpoint: Endpoint = {
               // Для поля id просто присваиваем значение без дополнительной обработки
               if (collectionField === 'id') {
                 mapped[collectionField] = row[csvField]
-                return
+                continue
               }
 
               // Получаем тип поля
@@ -192,7 +134,7 @@ export const importEndpoint: Endpoint = {
                     `Поле "${collectionField}" не найдено в схеме коллекции "${collection}"`,
                   )
                 }
-                return
+                continue
               }
 
               // Обработка специальных типов полей
@@ -200,7 +142,7 @@ export const importEndpoint: Endpoint = {
 
               // Обработка richText полей
               if (fieldType === 'richText') {
-                value = convertStringToLexicalFormat(value)
+                value = await convertStringToLexicalFormat(value, { assets, payload: req.payload })
               }
 
               if (fieldType === 'relationship') {
@@ -242,6 +184,7 @@ export const importEndpoint: Endpoint = {
                     value,
                     uploadField.relationTo,
                     hasMany,
+                    assets,
                   )
                 }
               }

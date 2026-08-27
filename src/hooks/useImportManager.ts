@@ -32,12 +32,14 @@ export const useImportManager = (collectionFields: CollectionField[]) => {
     settings: ImportSettings,
     data: Record<string, any>[],
     collection: string,
+    assets?: Record<string, string>,
   ) => {
     setCurrentStep('processing')
     setImportProgress((prev) => ({ ...prev, errors: [], isLoading: true }))
 
     try {
       const importRequest: ImportRequest = {
+        assets,
         collection,
         data,
         settings,
