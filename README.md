@@ -4,7 +4,7 @@ An extended import and export plugin for [Payload CMS](https://payloadcms.com) w
 
 ## Features
 
-- 📤 **Data Import** - Import data from CSV, JSON and other formats
+- 📤 **Data Import** - Import data from CSV, JSON, XLSX and Notion archives
 - 🔧 **Field Mapping Configuration** - Flexible field mapping during import  
 - 📊 **Data Preview** - Preview data before importing
 - ⚡ **Import Progress** - Track import progress in real-time
@@ -13,6 +13,7 @@ An extended import and export plugin for [Payload CMS](https://payloadcms.com) w
 - 🔍 **Data Validation** - Validate data before import
 - 📁 **Sample Files** - Generate sample files for import
 - 🗒️ **Notion Import** - Import a Notion export (ZIP) with its page content and images
+- 🖼️ **Image Upload** - Remote URLs and archive files are uploaded into your media collection
 
 ## Installation
 
@@ -67,18 +68,43 @@ payloadExtendedImportExportPlugin({
 
 ## How It Works
 
-1. **Upload File**: Select and upload your data file (CSV, JSON, etc.)
-2. **Preview Data**: Review the parsed data before importing
-3. **Configure Mapping**: Map your file columns to collection fields
-4. **Validate**: Check for any data validation errors
-5. **Import**: Execute the import with real-time progress tracking
+1. **Upload File**: select or drop your file (CSV, JSON, XLSX, or a Notion `.zip`)
+2. **Preview Data**: the file is parsed **in the browser** into a table you can review
+3. **Configure Mapping**: map each column to a collection field, pick the import mode and locale
+4. **Import**: the rows are POSTed to `/api/import`, which converts each value to the target
+   field type, uploads the images and writes the documents
+5. **Report**: created/updated counts and per-row errors are shown in the drawer
+
+### On the server
+
+For every row, the endpoint looks up the target field in your collection schema and converts
+the value accordingly:
+
+| Field type | What the importer does |
+| --- | --- |
+| `text`, `textarea`, `email`, `date`… | value is used as-is |
+| `number` | extracts a number from the string (a few "in stock"/"out of stock" keywords map to `1`/`0`) |
+| `richText` | converts the text to Lexical; a line that only holds a Markdown image becomes an upload node |
+| `upload` | value is an image URL (downloaded) or a file inside the imported archive; the created media document is linked. Comma-separated values for `hasMany` |
+| `relationship` | value is a document ID; comma-separated IDs for `hasMany` |
+| `array` | a JSON string is parsed, missing item IDs are generated |
+| required fields with a `defaultValue` | filled in on create when the column is not mapped |
+
+Import modes:
+
+- **create** — always creates a new document, any mapped `id` is ignored
+- **update** — finds the existing document through the *compare field* and merges the new values
+  into it (so unmapped required fields keep their value)
+- **upsert** — updates when the compare field matches, creates otherwise
 
 ## Supported File Formats
 
-- **CSV** - Comma-separated values (RFC 4180: quotes, commas and line breaks inside values)
-- **JSON** - JavaScript Object Notation
-- **Excel** - .xlsx files
-- **ZIP** - Notion export (Markdown & CSV), images included
+- **CSV** — comma-separated values, parsed per RFC 4180: quoted values, commas and line breaks
+  inside a value, doubled quotes, and a leading BOM (the one Notion and Excel write) are handled.
+  Columns with an empty header are dropped
+- **JSON** — an array of objects; the keys of the first object become the columns
+- **XLSX / XLS** — the first sheet, first row as the header (the parser is loaded on demand)
+- **ZIP** — a Notion export (Markdown & CSV), images included — see below
 
 ## Notion Import
 
@@ -88,23 +114,73 @@ Drop a Notion export archive straight into the drawer — no unzipping, no manua
 2. Drop the `.zip` into the import drawer
 3. Map the columns and import
 
-What the plugin does with the archive:
+### What is inside the archive
 
-- Reads the database CSV (the first one found) as the rows to import
-- Adds a **`content`** column holding the page body (Markdown, without the title and the
-  property block). Map it to a `richText` or `textarea` field
-- Uploads the files referenced by *Files & media* columns **and** the images embedded in page
-  bodies into your upload collection (`media`, or the first upload-enabled collection), then
-  links them: upload fields get the document ID, `richText` fields get a real Lexical upload node
-- Only the files actually referenced by the imported rows are sent to the server
+```
+Export-1a2b3c.zip
+├── Tasks 1a2b3c.csv                        ← the database rows
+└── Tasks 1a2b3c/
+    ├── Write the docs 4d5e6f.md            ← one page body per row
+    └── Write the docs 4d5e6f/
+        ├── cover.png                       ← files of the "Files & media" column
+        └── diagram.png                     ← images used inside the page
+```
 
-Known limits:
+```csv
+Name,Status,Cover
+Write the docs,In progress,Write%20the%20docs%204d5e6f/cover.png
+```
 
-- The archive is parsed in the browser and its files travel to the server inside a single JSON
-  request — good for regular exports, not for multi-gigabyte ones
+### What the plugin makes of it
+
+| Column | Value in the preview |
+| --- | --- |
+| `Name` | `Write the docs` |
+| `Status` | `In progress` |
+| `Cover` | `Tasks 1a2b3c/Write the docs 4d5e6f/cover.png` |
+| `content` | the page body, with `![](Tasks 1a2b3c/Write the docs 4d5e6f/diagram.png)` |
+
+Step by step:
+
+- The **first CSV** of the archive gives the rows. Notion also writes an `..._all.csv` for
+  databases with sub-items; the shorter, view-level CSV is the one used
+- A **`content` column** is appended with the body of the matching `.md` page — its `# Title`
+  heading and the property block right below it are stripped (the column is named
+  `notion_content` if your database already has a `content` column). Pages are matched to rows
+  by title (the page `# Title` against the first CSV column), so renamed or duplicated titles
+  simply end up without content
+- Every **file reference** — in a *Files & media* column or in a Markdown image of the body — is
+  rewritten to its path inside the archive, whether it is written as a bare file name, a relative
+  path or a URL-encoded one. External `https://` links are left untouched and downloaded by the
+  server as usual
+- Only the files **actually referenced** by the rows are carried over to the server, as data URIs
+  in the import request
+- Large exports that Notion delivers as an archive containing a single inner archive are
+  unwrapped automatically
+
+### Mapping it to a collection
+
+| Notion column | Payload field |
+| --- | --- |
+| `Name` | `title` — `text` |
+| `Status` | `status` — `select` |
+| `Cover` | `cover` — `upload` |
+| `content` | `content` — `richText` (or `textarea` to keep raw Markdown) |
+
+On import, the archive files are uploaded into your upload collection (`media`, or the first
+upload-enabled collection) and linked: `upload` fields receive the media ID, `richText` fields
+receive a real Lexical `upload` node in place of the Markdown image. The same file referenced by
+several rows is uploaded once per import.
+
+### Known limits
+
+- The archive is read in the browser and its files travel to the server inside a single JSON
+  request — fine for regular exports, not for multi-gigabyte ones
 - Identical files are deduplicated within one import; re-importing the same archive creates new
   `media` documents
-- ZIP64 archives (>4 GB or >65535 files) are not supported
+- ZIP64 archives (>4 GB or >65535 entries) and Notion's HTML export are not supported
+- The archive is read with the native `DecompressionStream` API (Chrome 103+, Safari 16.4+,
+  Firefox 113+)
 
 ## User Interface
 
@@ -219,7 +295,8 @@ title,content,status
 
 ## Testing
 
-The plugin includes comprehensive tests to ensure reliability:
+The plugin includes tests to ensure reliability — `pnpm test:int` also runs the unit specs next
+to the source, such as `src/utils/notion.spec.ts` (CSV parsing, ZIP reading, Notion archive):
 
 ```bash
 # Run integration tests
@@ -245,11 +322,40 @@ interface PayloadExtendedImportExportPluginConfig {
 
 ### Import Endpoint
 
-The plugin exposes an import endpoint at `/api/import` that accepts:
+The plugin exposes an import endpoint at `/api/import`. Files are parsed in the browser, so the
+endpoint receives JSON rows, not the file itself:
 
 - **Method**: `POST`
-- **Content-Type**: `multipart/form-data`
-- **Body**: Form data with file and configuration
+- **Content-Type**: `application/json`
+
+```ts
+{
+  collection: 'posts',
+  // Rows, keyed by column name
+  data: [{ Name: 'Write the docs', Status: 'In progress', content: '...' }],
+  // Optional: files of an imported archive, "path inside the archive" → data URI
+  assets: { 'Tasks 1a2b3c/Write the docs 4d5e6f/cover.png': 'data:image/png;base64,...' },
+  settings: {
+    mode: 'create' | 'update' | 'upsert',
+    compareField: 'id',      // used by update/upsert to find the existing document
+    fieldMappings: [{ csvField: 'Name', collectionField: 'title' }],
+    locale: 'en',            // optional, defaults to the request locale
+  },
+}
+```
+
+Response:
+
+```ts
+{
+  success: boolean
+  created: number
+  updated: number
+  errors: string[]          // one entry per failed row
+  message: string
+  details?: unknown[]       // development only
+}
+```
 
 ## Troubleshooting
 
